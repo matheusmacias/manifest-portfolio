@@ -94,6 +94,73 @@ spec:
 
 ---
 apiVersion: v1
+kind: Pod
+metadata:
+  name: nitro-assets
+  namespace: default
+  labels:
+    app: nitro-stack
+    component: assets
+spec:
+  containers:
+  - name: nitro-assets
+    image: ghcr.io/matheusmacias/nitro-assets:latest
+    ports:
+    - containerPort: 80
+      hostPort: 8090
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+      limits:
+        memory: "256Mi"
+        cpu: "250m"
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nitro-imager
+  namespace: default
+  labels:
+    app: nitro-stack
+    component: imager
+spec:
+  containers:
+  - name: nitro-imager
+    image: ghcr.io/matheusmacias/nitro-imager:latest
+    ports:
+    - containerPort: 3030
+      hostPort: 3030
+    env:
+    - name: API_HOST
+      value: "0.0.0.0"
+    - name: API_PORT
+      value: "3030"
+    - name: AVATAR_SAVE_PATH
+      value: "/app/cache"
+    - name: AVATAR_ACTIONS_URL
+      value: "http://nitro-assets:80/gamedata/json/HabboAvatarActions.json"
+    - name: AVATAR_FIGUREDATA_URL
+      value: "http://nitro-assets:80/clothes/json/FigureData.json"
+    - name: AVATAR_FIGUREMAP_URL
+      value: "http://nitro-assets:80/clothes/json/FigureMap.json"
+    - name: AVATAR_EFFECTMAP_URL
+      value: "http://nitro-assets:80/effects/json/EffectMap.json"
+    - name: AVATAR_ASSET_URL
+      value: "http://nitro-assets:80/clothes/nitro/%libname%.nitro"
+    - name: AVATAR_ASSET_EFFECT_URL
+      value: "http://nitro-assets:80/effects/nitro/%libname%.nitro"
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "250m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: certbot-multi-config
@@ -110,6 +177,10 @@ data:
     DOMAINS=macias.one,www.macias.one
     CERT_NAME=macias-one
 
+    [nitro-assets-domain]
+    DOMAINS=nitro-assets.macias.one
+    CERT_NAME=nitro-assets
+
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -121,6 +192,16 @@ data:
     upstream portfolio {
         server portfolio:3000;
         keepalive 64;
+    }
+
+    upstream nitro-assets {
+        server nitro-assets:80;
+        keepalive 32;
+    }
+
+    upstream nitro-imager {
+        server nitro-imager:3030;
+        keepalive 32;
     }
 
     # HTTP - Redirect to HTTPS
@@ -145,7 +226,8 @@ data:
 
     # HTTPS
     server {
-        listen 443 ssl http2;
+        listen 443 ssl;
+        http2 on;
         server_name macias.one www.macias.one;
 
         ssl_certificate /etc/letsencrypt/live/macias-one/fullchain.pem;
@@ -211,5 +293,82 @@ data:
                 expires 1y;
                 add_header Cache-Control "public, immutable";
             }
+        }
+    }
+
+    # Nitro Assets - HTTP
+    server {
+        listen 80;
+        server_name nitro-assets.macias.one;
+
+        # ACME challenge for Let's Encrypt
+        location /.well-known/acme-challenge/ {
+            proxy_pass http://localhost:8080;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        # Redirect to HTTPS
+        location / {
+            return 301 https://$host$request_uri;
+        }
+    }
+
+    # Nitro Assets - HTTPS
+    server {
+        listen 443 ssl;
+        http2 on;
+        server_name nitro-assets.macias.one;
+
+        ssl_certificate /etc/letsencrypt/live/nitro-assets/fullchain.pem;
+        ssl_certificate_key /etc/letsencrypt/live/nitro-assets/privkey.pem;
+        ssl_session_cache shared:SSL:10m;
+        ssl_session_timeout 10m;
+        ssl_prefer_server_ciphers on;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers HIGH:!aNULL:!MD5;
+
+        location / {
+            proxy_pass http://nitro-assets;
+            proxy_http_version 1.1;
+
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Connection "";
+
+            # CORS headers
+            add_header Access-Control-Allow-Origin "*" always;
+            add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Origin, Content-Type, Accept" always;
+
+            # Cache static assets
+            expires 7d;
+            add_header Cache-Control "public";
+        }
+    }
+
+    # Nitro Imager - HTTP only (no SSL yet)
+    server {
+        listen 80;
+        server_name imager.macias.one;
+
+        location / {
+            proxy_pass http://nitro-imager;
+            proxy_http_version 1.1;
+
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Connection "";
+
+            # CORS headers
+            add_header Access-Control-Allow-Origin "*" always;
+            add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Origin, Content-Type, Accept" always;
         }
     }
